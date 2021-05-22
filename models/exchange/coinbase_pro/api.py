@@ -9,10 +9,10 @@ import requests
 import base64
 import sys
 import pandas as pd
+from numpy import floor
 from datetime import datetime, timedelta
 from requests.auth import AuthBase
 from requests import Request
-from math import floor
 
 # Constants
 
@@ -212,7 +212,7 @@ class AuthAPI(AuthAPIBase):
 
         # calculates the price at the time of purchase
         if status != 'open':
-            df['price'] = df.apply(lambda row: round((float(row.executed_value) * 100) / (float(row.filled_size) * 100), 2) if float(row.filled_size) > 0 else 0, axis=1)
+            df['price'] = df.apply(lambda row: (float(row.executed_value) * 100) / (float(row.filled_size) * 100) if float(row.filled_size) > 0 else 0, axis=1)
 
         # rename the columns
         if status == 'open':
@@ -225,7 +225,7 @@ class AuthAPI(AuthAPIBase):
             df.columns = [ 'created_at', 'market', 'action', 'type', 'size', 'filled', 'fees', 'price', 'status' ]
             df['filled'] = df['filled'].astype(float).round(8)
             df['size'] = df['size'].astype(float).round(8)
-            df['fees'] = df['fees'].astype(float).round(2)
+            df['fees'] = df['fees'].astype(float).round(8)
             df['price'] = df['price'].astype(float).round(8)
 
         # convert dataframe to a time series
@@ -282,7 +282,7 @@ class AuthAPI(AuthAPIBase):
             'product_id': market,
             'type': 'market',
             'side': 'buy',
-            'funds': self.marketBaseIncrement(market, quote_quantity)
+            'funds': self.marketQuoteIncrement(market, quote_quantity)
         }
 
         if self.debug is True:
@@ -305,7 +305,7 @@ class AuthAPI(AuthAPIBase):
             'product_id': market,
             'type': 'market',
             'side': 'sell',
-            'size': base_quantity
+            'size': self.marketBaseIncrement(market, base_quantity)
         }
 
         print (order)
@@ -327,7 +327,7 @@ class AuthAPI(AuthAPIBase):
             'product_id': market,
             'type': 'limit',
             'side': 'sell',
-            'size': base_quantity,
+            'size': self.marketBaseIncrement(market, base_quantity),
             'price': futurePrice
         }
 
@@ -358,6 +358,21 @@ class AuthAPI(AuthAPIBase):
 
         return floor(amount * 10 ** nb_digits) / 10 ** nb_digits
 
+    def marketQuoteIncrement(self, market, amount) -> float:
+        product = self.authAPI('GET', f'products/{market}')
+
+        if 'quote_increment' not in product:
+            return amount
+
+        quote_increment = str(product['quote_increment'].values[0])
+
+        if '.' in str(quote_increment):
+            nb_digits = len(str(quote_increment).split('.')[1])
+        else:
+            nb_digits = 0
+
+        return floor(amount * 10 ** nb_digits) / 10 ** nb_digits
+
     def authAPI(self, method: str, uri: str, payload: str='') -> pd.DataFrame:
         if not isinstance(method, str):
             raise TypeError('Method is not a string.')
@@ -377,8 +392,11 @@ class AuthAPI(AuthAPIBase):
                 resp = requests.post(self._api_url + uri, json=payload, auth=self)
 
             if resp.status_code != 200:
-                if self.die_on_api_error:
-                    raise Exception(method.upper() + 'GET (' + '{}'.format(resp.status_code) + ') ' + self._api_url + uri + ' - ' + '{}'.format(resp.json()['message']))
+                if self.die_on_api_error or resp.status_code == 401:
+                    # disable traceback
+                    sys.tracebacklimit = 0
+
+                    raise Exception(method.upper() + ' (' + '{}'.format(resp.status_code) + ') ' + self._api_url + uri + ' - ' + '{}'.format(resp.json()['message']))
                 else:
                     print ('error:', method.upper() + ' (' + '{}'.format(resp.status_code) + ') ' + self._api_url + uri + ' - ' + '{}'.format(resp.json()['message']))
                     return pd.DataFrame()
